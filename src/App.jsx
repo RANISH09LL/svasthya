@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, useCallback, createContext, useContext } from "react";
 import { DUMMY_POSTS, SYMPTOM_REPORTS } from "./dummyPosts.js";
+import { parseHealthMetrics, hasHealthMetrics } from "./utils/metricParser.js";
+import { simplifyMedicalText, READING_LEVELS, factCheckHealthClaim, scrubPII, generateCaseStudy, transcribeAudio, extractSymptomsFromTranscript, chatWithAvatar } from "./utils/groq.js";
 
 /* ════════════════════════════════════════════════════════════════
    GLOBAL CSS
@@ -389,6 +391,89 @@ html,body{height:100%;width:100%;margin:0;padding:0;background:var(--bg);color:v
 /* ── Theme toggle ── */
 .theme-toggle{display:flex;align-items:center;gap:12px;padding:12px 18px;border-radius:14px;border:1px solid transparent;background:var(--surface2);cursor:pointer;transition:all .25s ease;font-size:14px;font-weight:600;color:var(--text2);width:100%}
 .theme-toggle:hover{background:var(--surface);border-color:var(--border);color:var(--text);transform:translateY(-2px);box-shadow:var(--shadow)}
+
+/* ── Health Metric Visualizer ── */
+.metric-panel{margin-top:14px;padding-top:14px;border-top:1px solid var(--border);animation:fadeUp .4s cubic-bezier(0.16,1,0.3,1)}
+.metric-panel-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+.metric-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-bottom:12px}
+.metric-card{background:var(--surface2);border:1px solid var(--border);border-radius:16px;padding:14px 12px;text-align:center;transition:all .25s ease;position:relative;overflow:hidden}
+.metric-card:hover{transform:translateY(-2px);box-shadow:var(--shadow2);border-color:rgba(59,130,246,0.25)}
+.metric-card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;border-radius:3px 3px 0 0}
+.metric-card.status-normal::before{background:linear-gradient(90deg,#22c55e,#16a34a)}
+.metric-card.status-high::before{background:linear-gradient(90deg,#ef4444,#dc2626)}
+.metric-card.status-low::before{background:linear-gradient(90deg,#f59e0b,#d97706)}
+.metric-status-pill{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px;text-transform:uppercase;letter-spacing:.04em;margin-top:4px}
+.status-normal .metric-status-pill{background:rgba(34,197,94,.1);color:#15803d}
+.status-high .metric-status-pill{background:rgba(239,68,68,.1);color:#b91c1c}
+.status-low .metric-status-pill{background:rgba(245,158,11,.1);color:#b45309}
+.metric-range-bar{height:8px;background:var(--border);border-radius:8px;overflow:visible;position:relative;margin:8px 0 4px}
+.metric-range-track{position:absolute;top:0;left:20%;right:20%;height:100%;background:linear-gradient(90deg,#22c55e88,#22c55e);border-radius:8px}
+.metric-range-marker{position:absolute;top:50%;transform:translate(-50%,-50%);width:14px;height:14px;border-radius:50%;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.2);transition:left .5s cubic-bezier(0.16,1,0.3,1)}
+
+/* ── Jargon Translator ── */
+.translator-panel{margin-top:14px;padding-top:14px;border-top:1px solid var(--border);animation:fadeUp .4s cubic-bezier(0.16,1,0.3,1)}
+.reading-level-tabs{display:flex;gap:6px;margin-bottom:12px;background:var(--surface2);padding:4px;border-radius:50px}
+.level-tab{flex:1;padding:7px 10px;border-radius:50px;border:none;background:transparent;cursor:pointer;font-size:12px;font-weight:700;color:var(--text3);transition:all .2s;font-family:var(--font-b)}
+.level-tab.active{background:var(--surface);color:var(--text);box-shadow:var(--shadow)}
+.translator-result{background:linear-gradient(135deg,rgba(59,130,246,0.04),rgba(99,102,241,0.03));border:1px solid rgba(59,130,246,0.15);border-radius:16px;padding:16px 18px}
+.translator-loading{display:flex;align-items:center;gap:10px;padding:14px;color:var(--text3);font-size:13px}
+.translator-dot{width:6px;height:6px;border-radius:50%;background:var(--teal);animation:pulseGlow 1s ease-in-out infinite}
+.translator-dot:nth-child(2){animation-delay:.15s}
+.translator-dot:nth-child(3){animation-delay:.3s}
+
+/* ── Fact Check Badge ── */
+.fact-badge{display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border-radius:20px;font-size:12px;font-weight:700;cursor:default;transition:all .3s}
+.fact-badge.safe{background:rgba(34,197,94,.1);color:#15803d;border:1px solid rgba(34,197,94,.25)}
+.fact-badge.unverified{background:rgba(245,158,11,.1);color:#b45309;border:1px solid rgba(245,158,11,.25)}
+.fact-badge.caution{background:rgba(239,68,68,.08);color:#b91c1c;border:1px solid rgba(239,68,68,.2)}
+.fact-check-bar{display:flex;align-items:flex-start;gap:10px;margin-top:10px;padding:10px 14px;border-radius:12px;font-size:12.5px;border:1px solid transparent;animation:fadeUp .3s cubic-bezier(0.16,1,0.3,1)}
+.fact-check-bar.safe{background:rgba(34,197,94,.05);border-color:rgba(34,197,94,.2)}
+.fact-check-bar.unverified{background:rgba(245,158,11,.05);border-color:rgba(245,158,11,.2)}
+.fact-check-bar.caution{background:rgba(239,68,68,.04);border-color:rgba(239,68,68,.18)}
+
+/* ── Case Study Modal ── */
+.case-study-modal{max-width:760px;width:100%}
+.case-panel{flex:1;min-width:0;padding:20px 22px;border-radius:20px;max-height:60vh;overflow-y:auto}
+.case-panel.original{background:rgba(239,68,68,.03);border:1px solid rgba(239,68,68,.15)}
+.case-panel.result{background:rgba(59,130,246,.03);border:1px solid rgba(59,130,246,.15)}
+.case-step{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:10px;margin-bottom:6px;font-size:13px;font-weight:600}
+.case-step.done{background:rgba(34,197,94,.08);color:#15803d}
+.case-step.active{background:rgba(59,130,246,.08);color:var(--teal);animation:pulseGlow 1.5s ease-in-out infinite}
+.case-step.pending{background:var(--surface2);color:var(--text3)}
+
+/* ── Voice Log Page ── */
+.voice-btn{width:72px;height:72px;border-radius:50%;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .2s;box-shadow:0 4px 24px rgba(0,0,0,.15)}
+.voice-btn.idle{background:linear-gradient(135deg,#ec4899,#be185d)}
+.voice-btn.recording{background:linear-gradient(135deg,#ef4444,#b91c1c);animation:pulseGlow 1s ease-in-out infinite}
+.voice-btn.processing{background:linear-gradient(135deg,#8b5cf6,#6d28d9)}
+.voice-wave{display:flex;align-items:center;gap:3px;height:32px}
+.voice-bar{width:4px;border-radius:4px;background:var(--teal);animation:voiceWave 1s ease-in-out infinite}
+.voice-bar:nth-child(2){animation-delay:.1s}.voice-bar:nth-child(3){animation-delay:.2s}.voice-bar:nth-child(4){animation-delay:.3s}.voice-bar:nth-child(5){animation-delay:.4s}
+@keyframes voiceWave{0%,100%{height:8px}50%{height:28px}}
+.timeline-node{display:flex;gap:14px;align-items:flex-start;padding-bottom:20px;position:relative}
+.timeline-node::before{content:'';position:absolute;left:19px;top:40px;bottom:0;width:2px;background:var(--border)}
+.timeline-node:last-child::before{display:none}
+.timeline-dot{width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:16px;border:2px solid var(--border)}
+.timeline-card{flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:16px;padding:14px 16px;transition:all .25s}
+.timeline-card:hover{box-shadow:var(--shadow2);transform:translateY(-1px)}
+.urgency-badge{display:inline-flex;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em}
+.urgency-routine{background:rgba(34,197,94,.1);color:#15803d}
+.urgency-soon{background:rgba(245,158,11,.1);color:#b45309}
+.urgency-urgent{background:rgba(239,68,68,.1);color:#b91c1c;animation:pulseGlow 2s ease-in-out infinite}
+
+/* ── Empathetic Avatar ── */
+.avatar-fab{position:fixed;bottom:80px;right:22px;width:56px;height:56px;border-radius:50%;border:none;cursor:pointer;background:linear-gradient(135deg,#00a896,#007a6e);box-shadow:0 4px 20px rgba(0,168,150,.4);display:flex;align-items:center;justify-content:center;z-index:200;transition:all .25s}
+.avatar-fab:hover{transform:scale(1.1);box-shadow:0 6px 28px rgba(0,168,150,.5)}
+.avatar-drawer{position:fixed;bottom:148px;right:22px;width:360px;background:var(--surface);border:1px solid var(--border);border-radius:24px;box-shadow:var(--shadow2);z-index:200;display:flex;flex-direction:column;overflow:hidden;animation:fadeUp .3s cubic-bezier(0.16,1,0.3,1);max-height:520px}
+.avatar-header{background:linear-gradient(135deg,#00a896,#007a6e);padding:16px 18px;display:flex;align-items:center;gap:12px}
+.avatar-face{width:44px;height:44px;border-radius:50%;background:rgba(255,255,255,.15);display:flex;align-items:center;justify-content:center;flex-shrink:0;border:2px solid rgba(255,255,255,.3)}
+.chat-messages{flex:1;overflow-y:auto;padding:14px 14px;display:flex;flex-direction:column;gap:10px;max-height:320px}
+.chat-bubble{max-width:85%;padding:10px 14px;border-radius:18px;font-size:13.5px;line-height:1.55;animation:fadeUp .25s ease}
+.chat-bubble.ai{background:var(--surface2);border:1px solid var(--border);align-self:flex-start;border-bottom-left-radius:4px}
+.chat-bubble.user{background:linear-gradient(135deg,#00a896,#007a6e);color:#fff;align-self:flex-end;border-bottom-right-radius:4px}
+.chat-input-row{display:flex;gap:8px;padding:10px 12px;border-top:1px solid var(--border)}
+.chat-input{flex:1;border:1px solid var(--border);border-radius:50px;padding:9px 14px;font-size:13px;background:var(--surface2);color:var(--text);outline:none;font-family:var(--font-b)}
+.chat-input:focus{border-color:var(--teal);background:var(--surface)}
 `;
 
 
@@ -553,6 +638,364 @@ const Av = ({init="?",sz=38,ring=false,dot=false,onClick,pic=null}) => (
 const Spinner = () => <span style={{width:14,height:14,border:"2px solid rgba(255,255,255,0.3)",borderTopColor:"#fff",borderRadius:"50%",display:"inline-block",animation:"spin .7s linear infinite"}}/>;
 
 /* ════════════════════════════════════════════════════════════════
+   HEALTH METRIC VISUALIZER COMPONENT
+════════════════════════════════════════════════════════════════ */
+const RangeBar = ({ value, min, max, color, status }) => {
+  if (min === null || max === null) return null;
+  const range = max - min;
+  // Marker position: clamp value to [min - 20%, max + 20%] of the bar width
+  const barMin = min - range * 0.3;
+  const barMax = max + range * 0.3;
+  const pct = Math.max(0, Math.min(100, ((value - barMin) / (barMax - barMin)) * 100));
+  const normalLeft = ((min - barMin) / (barMax - barMin)) * 100;
+  const normalRight = 100 - ((barMax - max) / (barMax - barMin)) * 100;
+  const markerColor = status === 'normal' ? '#22c55e' : status === 'high' ? '#ef4444' : '#f59e0b';
+
+  return (
+    <div className="metric-range-bar">
+      <div className="metric-range-track" style={{ left: `${normalLeft}%`, right: `${100 - normalRight}%` }} />
+      <div className="metric-range-marker" style={{ left: `${pct}%`, background: markerColor }} />
+    </div>
+  );
+};
+
+const MetricCard = ({ metric }) => {
+  const statusLabel = { normal: '✓ Normal', high: '↑ High', low: '↓ Low' };
+  return (
+    <div className={`metric-card status-${metric.status}`}>
+      <p style={{ fontSize: 11, fontWeight: 700, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 4 }}>{metric.label}</p>
+      <p style={{ fontSize: 22, fontWeight: 800, color: metric.color || 'var(--text)', lineHeight: 1 }}>
+        {metric.display}
+      </p>
+      <p style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 4 }}>{metric.unit}</p>
+      {metric.min !== null && (
+        <RangeBar value={metric.value} min={metric.min} max={metric.max} color={metric.color} status={metric.status} />
+      )}
+      <span className="metric-status-pill">
+        {statusLabel[metric.status] || metric.status}
+      </span>
+      {metric.min !== null && (
+        <p style={{ fontSize: 10, color: 'var(--text3)', marginTop: 3 }}>Ref: {metric.min}–{metric.max}</p>
+      )}
+    </div>
+  );
+};
+
+const BPCard = ({ metric }) => {
+  return (
+    <div style={{ gridColumn: 'span 2' }}>
+      <div style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 16, padding: '14px 16px', position: 'relative', overflow: 'hidden' }}>
+        <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 3, background: 'linear-gradient(90deg,#ef4444,#f97316)', borderRadius: '3px 3px 0 0' }} />
+        <p style={{ fontSize: 11, fontWeight: 700, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 10 }}>Blood Pressure</p>
+        <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
+          <div style={{ textAlign: 'center' }}>
+            <p style={{ fontSize: 28, fontWeight: 800, color: '#ef4444', lineHeight: 1 }}>{metric.values[0].value}</p>
+            <p style={{ fontSize: 11, color: 'var(--text3)' }}>Systolic</p>
+            <RangeBar value={metric.values[0].value} min={metric.values[0].min} max={metric.values[0].max} status={metric.values[0].status} />
+            <span className={`metric-status-pill status-${metric.values[0].status}`} style={{ display: 'inline-flex', marginTop: 2 }}>
+              {metric.values[0].status === 'normal' ? '✓ Normal' : metric.values[0].status === 'high' ? '↑ High' : '↓ Low'}
+            </span>
+          </div>
+          <div style={{ fontSize: 24, color: 'var(--text3)', fontWeight: 300 }}>/</div>
+          <div style={{ textAlign: 'center' }}>
+            <p style={{ fontSize: 28, fontWeight: 800, color: '#f97316', lineHeight: 1 }}>{metric.values[1].value}</p>
+            <p style={{ fontSize: 11, color: 'var(--text3)' }}>Diastolic</p>
+            <RangeBar value={metric.values[1].value} min={metric.values[1].min} max={metric.values[1].max} status={metric.values[1].status} />
+            <span className={`metric-status-pill status-${metric.values[1].status}`} style={{ display: 'inline-flex', marginTop: 2 }}>
+              {metric.values[1].status === 'normal' ? '✓ Normal' : metric.values[1].status === 'high' ? '↑ High' : '↓ Low'}
+            </span>
+          </div>
+          <div style={{ flex: 1, textAlign: 'right' }}>
+            <p style={{ fontSize: 11, color: 'var(--text3)' }}>Reference</p>
+            <p style={{ fontSize: 12, fontWeight: 700, color: 'var(--text2)' }}>90–120 / 60–80 mmHg</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const HealthMetricVisualizer = ({ text }) => {
+  const [open, setOpen] = useState(false);
+  const metrics = open ? parseHealthMetrics(text) : [];
+
+  return (
+    <>
+      <button
+        className="action-btn"
+        onClick={() => setOpen(o => !o)}
+        style={{ color: open ? 'var(--teal)' : undefined, background: open ? 'var(--teal-bg)' : undefined }}
+        title="Visualize health metrics"
+      >
+        <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+          <line x1="18" y1="20" x2="18" y2="10" /><line x1="12" y1="20" x2="12" y2="4" /><line x1="6" y1="20" x2="6" y2="14" />
+        </svg>
+        <span style={{ fontSize: 11 }}>Visualize</span>
+      </button>
+      {open && metrics.length > 0 && (
+        <div className="metric-panel fi">
+          <div className="metric-panel-header">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div style={{ width: 24, height: 24, background: 'linear-gradient(135deg,var(--teal),var(--teal2))', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <svg width="13" height="13" fill="none" stroke="#fff" strokeWidth="2.2" viewBox="0 0 24 24">
+                  <line x1="18" y1="20" x2="18" y2="10" /><line x1="12" y1="20" x2="12" y2="4" /><line x1="6" y1="20" x2="6" y2="14" />
+                </svg>
+              </div>
+              <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Health Metrics</span>
+              <span style={{ fontSize: 11, color: 'var(--text3)', background: 'var(--surface2)', padding: '2px 8px', borderRadius: 20 }}>{metrics.length} detected</span>
+            </div>
+            <button onClick={() => setOpen(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text3)', padding: 4 }}>
+              <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+            </button>
+          </div>
+          <div className="metric-grid">
+            {metrics.map((m, i) =>
+              m.type === 'bp'
+                ? <BPCard key={i} metric={m} />
+                : <MetricCard key={i} metric={m} />
+            )}
+          </div>
+          <p style={{ fontSize: 11, color: 'var(--text3)', display: 'flex', alignItems: 'center', gap: 5 }}>
+            <svg width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>
+            Reference ranges are for adults. Consult a doctor for personal interpretation.
+          </p>
+        </div>
+      )}
+      {open && metrics.length === 0 && (
+        <div className="metric-panel fi" style={{ padding: '12px 0', color: 'var(--text3)', fontSize: 13, textAlign: 'center' }}>
+          No structured metrics detected in this post.
+        </div>
+      )}
+    </>
+  );
+};
+
+/* ════════════════════════════════════════════════════════════════
+   JARGON TRANSLATOR COMPONENT
+════════════════════════════════════════════════════════════════ */
+const JargonTranslator = ({ text }) => {
+  const [open, setOpen] = useState(false);
+  const [activeLevel, setActiveLevel] = useState('patient');
+  const [results, setResults] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const hasKey = !!import.meta.env.VITE_GROQ_API_KEY && import.meta.env.VITE_GROQ_API_KEY !== 'your_groq_api_key_here';
+
+  const translate = async (level) => {
+    setActiveLevel(level);
+    if (!open) setOpen(true);
+    if (results[level]) return; // cached
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await simplifyMedicalText(text, level);
+      setResults(r => ({ ...r, [level]: result }));
+    } catch (e) {
+      setError(e.message?.includes('VITE_GROQ_API_KEY') ? 'Add your Groq API key to .env to enable AI translation.' : 'Translation failed. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleOpen = () => {
+    if (!open) {
+      setOpen(true);
+      translate(activeLevel);
+    } else {
+      setOpen(false);
+    }
+  };
+
+  return (
+    <>
+      <button
+        className="action-btn"
+        onClick={handleOpen}
+        style={{ color: open ? '#8b5cf6' : undefined, background: open ? 'rgba(139,92,246,0.1)' : undefined }}
+        title="Simplify medical language"
+      >
+        <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+          <path d="M12 2L2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5" /><path d="M2 12l10 5 10-5" />
+        </svg>
+        <span style={{ fontSize: 11 }}>Simplify</span>
+      </button>
+      {open && (
+        <div className="translator-panel fi">
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+              <div style={{ width: 22, height: 22, background: 'linear-gradient(135deg,#8b5cf6,#6d28d9)', borderRadius: 7, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <svg width="11" height="11" fill="none" stroke="#fff" strokeWidth="2.2" viewBox="0 0 24 24">
+                  <path d="M12 2L2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5" /><path d="M2 12l10 5 10-5" />
+                </svg>
+              </div>
+              <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>AI Simplifier</span>
+              {!hasKey && <span style={{ fontSize: 10, color: '#b45309', background: 'rgba(245,158,11,.1)', padding: '2px 7px', borderRadius: 20, fontWeight: 700 }}>API Key needed</span>}
+            </div>
+            <button onClick={() => setOpen(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text3)', padding: 4 }}>
+              <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+            </button>
+          </div>
+          <div className="reading-level-tabs">
+            {Object.entries(READING_LEVELS).map(([key, lvl]) => (
+              <button key={key} className={`level-tab ${activeLevel === key ? 'active' : ''}`}
+                onClick={() => translate(key)}>
+                {lvl.label}
+              </button>
+            ))}
+          </div>
+          {loading ? (
+            <div className="translator-loading">
+              <div className="translator-dot" /><div className="translator-dot" /><div className="translator-dot" />
+              <span>Translating medical language…</span>
+            </div>
+          ) : error ? (
+            <div style={{ background: 'rgba(245,158,11,.06)', border: '1px solid rgba(245,158,11,.2)', borderRadius: 12, padding: '12px 14px', fontSize: 13, color: '#b45309' }}>
+              ⚠️ {error}
+            </div>
+          ) : results[activeLevel] ? (
+            <div className="translator-result">
+              <p style={{ fontSize: 10, fontWeight: 700, color: 'var(--teal2)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>
+                {READING_LEVELS[activeLevel]?.desc}
+              </p>
+              <p style={{ fontSize: 14, lineHeight: 1.7, color: 'var(--text)', whiteSpace: 'pre-wrap' }}>{results[activeLevel]}</p>
+            </div>
+          ) : null}
+          <p style={{ fontSize: 11, color: 'var(--text3)', marginTop: 10, display: 'flex', alignItems: 'center', gap: 5 }}>
+            <svg width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>
+            AI-generated simplification. Always consult a qualified doctor.
+          </p>
+        </div>
+      )}
+    </>
+  );
+};
+
+/* ════════════════════════════════════════════════════════════════
+   CASE STUDY SYNTHESIZER
+════════════════════════════════════════════════════════════════ */
+const CaseStudySynthesizer = ({ post }) => {
+  const [open, setOpen] = useState(false);
+  const [step, setStep] = useState(0); // 0=idle, 1=scrubbing, 2=generating, 3=done
+  const [scrubbed, setScrubbed] = useState(null);
+  const [caseStudy, setCaseStudy] = useState(null);
+  const [error, setError] = useState(null);
+  const [copied, setCopied] = useState(false);
+
+  const run = async () => {
+    setOpen(true);
+    if (caseStudy) return; // already generated
+    setStep(1); setError(null);
+    try {
+      const anon = await scrubPII(post.content);
+      setScrubbed(anon);
+      setStep(2);
+      const cs = await generateCaseStudy(anon);
+      setCaseStudy(cs);
+      setStep(3);
+    } catch (e) {
+      setError('Generation failed: ' + (e.message || 'Unknown error'));
+      setStep(0);
+    }
+  };
+
+  const copyForTeaching = () => {
+    if (!caseStudy) return;
+    navigator.clipboard.writeText(caseStudy).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); });
+  };
+
+  const stepLabels = ['Anonymizing PII…', 'Structuring case study…', 'Complete'];
+  const stepIcons = ['🔒', '📋', '✅'];
+
+  return (
+    <>
+      <button
+        className="action-btn"
+        onClick={run}
+        title="Generate anonymized case study (doctors only)"
+        style={{ color: '#1558b0', background: 'rgba(26,115,232,.08)' }}
+      >
+        <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+        </svg>
+        <span style={{ fontSize: 11 }}>Case Study</span>
+      </button>
+
+      {open && (
+        <div className="overlay" onClick={() => setOpen(false)}>
+          <div className="modal-box case-study-modal" onClick={e => e.stopPropagation()} style={{ padding: 0 }}>
+            {/* Header */}
+            <div style={{ background: 'linear-gradient(135deg,#1a73e8,#1558b0)', padding: '20px 24px', borderRadius: '28px 28px 0 0', color: '#fff', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{ width: 36, height: 36, background: 'rgba(255,255,255,.15)', borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>📋</div>
+                <div>
+                  <p style={{ fontWeight: 700, fontSize: 16 }}>Privacy-First Case Study Synthesizer</p>
+                  <p style={{ fontSize: 12, opacity: .8, marginTop: 2 }}>2-pass AI pipeline: PII scrub → educational case study</p>
+                </div>
+              </div>
+              <button onClick={() => setOpen(false)} style={{ background: 'rgba(255,255,255,.15)', border: 'none', borderRadius: '50%', width: 32, height: 32, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff' }}>
+                <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+
+            <div style={{ padding: '20px 24px' }}>
+              {/* Progress steps */}
+              {step > 0 && step < 3 && (
+                <div style={{ marginBottom: 16 }}>
+                  {stepLabels.map((label, i) => (
+                    <div key={i} className={`case-step ${i + 1 < step ? 'done' : i + 1 === step ? 'active' : 'pending'}`}>
+                      <span>{stepIcons[i]}</span>
+                      <span>Step {i + 1}: {label}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {error && (
+                <div style={{ background: 'rgba(239,68,68,.06)', border: '1px solid rgba(239,68,68,.2)', borderRadius: 12, padding: 14, color: '#b91c1c', fontSize: 13 }}>⚠️ {error}</div>
+              )}
+
+              {/* Two-panel view */}
+              {step === 3 && (
+                <div style={{ display: 'flex', gap: 14 }} className="fi">
+                  <div className="case-panel original">
+                    <p style={{ fontSize: 11, fontWeight: 700, color: '#b91c1c', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 10 }}>🔒 Anonymized Source</p>
+                    <p style={{ fontSize: 13, lineHeight: 1.7, color: 'var(--text2)', whiteSpace: 'pre-wrap' }}>{scrubbed}</p>
+                  </div>
+                  <div className="case-panel result">
+                    <p style={{ fontSize: 11, fontWeight: 700, color: 'var(--teal2)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 10 }}>📋 Educational Case Study</p>
+                    <p style={{ fontSize: 13.5, lineHeight: 1.75, color: 'var(--text)', whiteSpace: 'pre-wrap' }}>{caseStudy}</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Loading state */}
+              {(step === 1 || step === 2) && (
+                <div style={{ textAlign: 'center', padding: '40px 0' }} className="fi">
+                  <div className="ai-loading">
+                    <div className="ai-loading-bar" />
+                    <p style={{ fontSize: 13, color: 'var(--text3)' }}>{step === 1 ? '🔒 Detecting and scrubbing PII…' : '📋 Generating educational case study…'}</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Actions */}
+              {step === 3 && (
+                <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
+                  <button className="btn-g" onClick={() => { setScrubbed(null); setCaseStudy(null); setStep(0); run(); }} style={{ padding: '9px 18px', fontSize: 13 }}>🔄 Regenerate</button>
+                  <button className="btn-p" onClick={copyForTeaching} style={{ padding: '9px 20px', borderRadius: 50, fontSize: 13 }}>
+                    {copied ? '✓ Copied!' : '📋 Copy for Teaching'}
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+};
+
+/* ════════════════════════════════════════════════════════════════
    POST CARD COMPONENT
 ════════════════════════════════════════════════════════════════ */
 const PostCard = ({post, idx=0, onHashtagClick, onProfileClick}) => {
@@ -640,7 +1083,7 @@ const PostCard = ({post, idx=0, onHashtagClick, onProfileClick}) => {
         </div>
       )}
 
-      <div style={{display:"flex",alignItems:"center",gap:2,paddingTop:10,borderTop:"1px solid var(--border)"}}>
+      <div style={{display:"flex",alignItems:"center",gap:2,paddingTop:10,borderTop:"1px solid var(--border)",flexWrap:"wrap"}}>
         <button className={`action-btn ${post.liked?"liked":""}`}
           onClick={()=>toggleLike(post.id)}
           style={{animation:post.liked?"heartPop .4s cubic-bezier(.22,1,.36,1)":undefined}}>
@@ -655,6 +1098,9 @@ const PostCard = ({post, idx=0, onHashtagClick, onProfileClick}) => {
           {shared ? IC.check : IC.share}
           <span style={{fontSize:11}}>{shared?"Copied!":"Share"}</span>
         </button>
+        {hasHealthMetrics(post.content) && <HealthMetricVisualizer text={post.content} />}
+        <JargonTranslator text={post.content} />
+        {isDoc && post.role==="patient" && <CaseStudySynthesizer post={post} />}
         <button className={`action-btn ${post.saved?"saved":""}`}
           onClick={()=>toggleSave(post.id)} style={{marginLeft:"auto"}}>
           {post.saved ? IC.bmF : IC.bm}
@@ -722,6 +1168,9 @@ const Composer = ({defaultType, placeholder}) => {
   const [focused, setFocused] = useState(false);
   const [imgPreview, setImgPreview] = useState(null);
   const [showTagPicker, setShowTagPicker] = useState(false);
+  const [factCheck, setFactCheck] = useState(null); // {verdict, reason, suggestion}
+  const [factChecking, setFactChecking] = useState(false);
+  const factCheckTimer = useRef(null);
   const imgInputRef = useRef(null);
   const textRef = useRef(null);
   const maxChars = 500;
@@ -748,13 +1197,28 @@ const Composer = ({defaultType, placeholder}) => {
     textRef.current?.focus();
   };
 
+  // Debounced fact-check: fires 1.8s after user stops typing, min 80 chars
+  const handleTextChange = (val) => {
+    setText(val.slice(0, maxChars));
+    if (factCheckTimer.current) clearTimeout(factCheckTimer.current);
+    if (val.trim().length < 80) { setFactCheck(null); return; }
+    factCheckTimer.current = setTimeout(async () => {
+      setFactChecking(true);
+      try {
+        const result = await factCheckHealthClaim(val);
+        setFactCheck(result);
+      } catch { /* silently fail */ }
+      setFactChecking(false);
+    }, 1800);
+  };
+
   const submit = async () => {
     if(!text.trim() && !imgPreview) return;
     setSubmitting(true);
     await new Promise(r=>setTimeout(r,600));
     const tags = [...text.matchAll(/#\w+/g)].map(m=>m[0]);
     addPost({content:text.trim(), tags, type:defaultType||"patient_post", image:imgPreview||null});
-    setText(""); setImgPreview(null); setFocused(false); setSubmitting(false); setShowTagPicker(false);
+    setText(""); setImgPreview(null); setFocused(false); setSubmitting(false); setShowTagPicker(false); setFactCheck(null);
   };
 
   const pct = text.length/maxChars;
@@ -766,11 +1230,30 @@ const Composer = ({defaultType, placeholder}) => {
         <Av init={user?.avatar||"?"} sz={42} dot/>
         <div style={{flex:1}}>
           <textarea ref={textRef} className="compose-area"
-            value={text} onChange={e=>setText(e.target.value.slice(0,maxChars))}
+            value={text} onChange={e=>handleTextChange(e.target.value)}
             onFocus={()=>setFocused(true)}
             placeholder={placeholder||(user?.role==="doctor"?"Share medical knowledge or advice…":"Describe your symptoms or ask a health question…")}
             rows={focused||text?3:1}
             style={{transition:"all .2s",paddingTop:4}}/>
+          {/* Fact-check badge */}
+          {(factChecking || factCheck) && (
+            <div className={`fact-check-bar ${factCheck?.verdict || 'unverified'} fi`}>
+              {factChecking ? (
+                <><div className="translator-dot"/><div className="translator-dot"/><div className="translator-dot"/>
+                <span style={{fontSize:12,color:'var(--text3)'}}>Checking claim accuracy…</span></>
+              ) : factCheck ? (
+                <>
+                  <span className={`fact-badge ${factCheck.verdict}`}>
+                    {factCheck.verdict==='safe'?'✓ Verified':factCheck.verdict==='caution'?'⚠ Caution':'? Unverified'}
+                  </span>
+                  <div style={{flex:1}}>
+                    <p style={{fontSize:12.5,color:'var(--text)',fontWeight:600,marginBottom:2}}>{factCheck.reason}</p>
+                    {factCheck.suggestion && <p style={{fontSize:11.5,color:'var(--text3)'}}>{factCheck.suggestion}</p>}
+                  </div>
+                </>
+              ) : null}
+            </div>
+          )}
           {imgPreview && (
             <div className="fi" style={{position:"relative",marginTop:10,borderRadius:14,overflow:"hidden",border:"1px solid var(--border)"}}>
               <img src={imgPreview} alt="Preview" style={{width:"100%",maxHeight:240,objectFit:"cover",display:"block"}}/>
@@ -835,6 +1318,309 @@ const Composer = ({defaultType, placeholder}) => {
 
 
 /* ════════════════════════════════════════════════════════════════
+   VOICE-TO-STRUCTURED-LOG PAGE
+════════════════════════════════════════════════════════════════ */
+const URGENCY_META = {
+  routine: { emoji: '🟢', label: 'Routine', cls: 'urgency-routine', dotBg: 'rgba(34,197,94,.15)', dotColor: '#15803d' },
+  soon:    { emoji: '🟡', label: 'Soon',    cls: 'urgency-soon',    dotBg: 'rgba(245,158,11,.15)', dotColor: '#b45309' },
+  urgent:  { emoji: '🔴', label: 'Urgent',  cls: 'urgency-urgent',  dotBg: 'rgba(239,68,68,.15)',  dotColor: '#b91c1c' },
+};
+const TONE_EMOJI = { anxious:'😰', calm:'😌', distressed:'😟', hopeful:'🌟', neutral:'😐' };
+
+const VoiceLogPage = ({ onShareLog }) => {
+  const { addPost, user } = useApp();
+  const [recState, setRecState] = useState('idle'); // idle|recording|processing|done
+  const [transcript, setTranscript] = useState('');
+  const [logData, setLogData] = useState(null);
+  const [logs, setLogs] = useState([]);
+  const [error, setError] = useState(null);
+  const mediaRef = useRef(null);
+  const chunksRef = useRef([]);
+
+  const startRecording = async () => {
+    setError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mr = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      chunksRef.current = [];
+      mr.ondataavailable = e => { if (e.data.size > 0) chunksRef.current.push(e.data); };
+      mr.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        setRecState('processing');
+        try {
+          const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
+          const tx = await transcribeAudio(blob);
+          setTranscript(tx);
+          const data = await extractSymptomsFromTranscript(tx);
+          setLogData(data);
+          setRecState('done');
+        } catch (e) {
+          setError(e.message || 'Transcription failed');
+          setRecState('idle');
+        }
+      };
+      mediaRef.current = mr;
+      mr.start();
+      setRecState('recording');
+    } catch (e) {
+      setError('Microphone access denied. Please allow mic permissions.');
+    }
+  };
+
+  const stopRecording = () => { mediaRef.current?.stop(); };
+
+  const saveLog = () => {
+    if (!logData) return;
+    const entry = { id: Date.now(), transcript, logData, createdAt: new Date().toLocaleTimeString() };
+    setLogs(prev => [entry, ...prev]);
+    setLogData(null); setTranscript(''); setRecState('idle');
+  };
+
+  const shareToFeed = (entry) => {
+    const urgMeta = URGENCY_META[entry.logData.urgency] || URGENCY_META.routine;
+    const content = `🎙️ Voice Health Log\n\n📋 Summary: ${entry.logData.summary}\n\n🤒 Symptoms: ${entry.logData.symptoms.join(', ')}\n⏱ Duration: ${entry.logData.duration}\n📊 Severity: ${entry.logData.severity}\n${urgMeta.emoji} Urgency: ${urgMeta.label}\n\n#voicelog #symptoms`;
+    addPost({ content, tags: ['#voicelog', '#symptoms'], type: 'patient_post', image: null });
+  };
+
+  const recBtn = recState === 'recording' ? 'recording' : recState === 'processing' ? 'processing' : 'idle';
+  const recLabel = { idle: '🎙️ Tap to Record', recording: '⏹ Stop Recording', processing: 'Transcribing…', done: '✅ Log Ready' };
+
+  return (
+    <div className="ai-page">
+      <div className="ai-page-header">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ width: 36, height: 36, background: 'linear-gradient(135deg,#ec4899,#be185d)', borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 16px rgba(236,72,153,.3)', fontSize: 18 }}>🎙️</div>
+          <div>
+            <h1 style={{ fontSize: 22, fontWeight: 700, color: 'var(--text)', fontFamily: 'var(--font-d)' }}>Voice Health Log</h1>
+            <p style={{ fontSize: 12, color: 'var(--text3)', marginTop: 1 }}>Speech → Whisper → AI metrics → Interactive timeline</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Recorder */}
+      <div className="ai-card fu" style={{ textAlign: 'center', padding: '32px 20px', marginBottom: 16 }}>
+        {recState === 'recording' && (
+          <div className="voice-wave" style={{ justifyContent: 'center', marginBottom: 20 }}>
+            {[1,2,3,4,5].map(i => <div key={i} className="voice-bar" style={{ animationDelay: `${(i-1)*0.1}s` }}/>)}
+          </div>
+        )}
+        <button
+          className={`voice-btn ${recBtn}`}
+          onClick={recState === 'idle' || recState === 'done' ? startRecording : recState === 'recording' ? stopRecording : undefined}
+          style={{ margin: '0 auto 16px' }}
+          disabled={recState === 'processing'}
+        >
+          {recState === 'recording' ? (
+            <svg width="26" height="26" fill="#fff" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+          ) : recState === 'processing' ? (
+            <svg width="26" height="26" fill="none" stroke="#fff" strokeWidth="2.5" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" strokeDasharray="30" strokeDashoffset="10" style={{animation:'spin .8s linear infinite'}}/></svg>
+          ) : (
+            <svg width="26" height="26" fill="none" stroke="#fff" strokeWidth="2.2" viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+          )}
+        </button>
+        <p style={{ fontWeight: 700, fontSize: 15, color: 'var(--text)', marginBottom: 4 }}>{recLabel[recState]}</p>
+        <p style={{ fontSize: 12, color: 'var(--text3)' }}>Describe your symptoms, how long, how severe</p>
+        {error && <p style={{ color: '#b91c1c', fontSize: 13, marginTop: 10 }}>⚠️ {error}</p>}
+      </div>
+
+      {/* Transcript + Extracted Data */}
+      {logData && (
+        <div className="ai-card accent-teal fu" style={{ marginBottom: 16 }}>
+          <p style={{ fontSize: 11, fontWeight: 700, color: 'var(--teal2)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 10 }}>📝 Transcript</p>
+          <p style={{ fontSize: 13, color: 'var(--text2)', lineHeight: 1.65, fontStyle: 'italic', marginBottom: 16 }}>"{transcript}"</p>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 14 }}>
+            {[
+              { label: 'Severity', val: logData.severity },
+              { label: 'Duration', val: logData.duration },
+              { label: 'Mood', val: `${TONE_EMOJI[logData.emotionalTone] || '😐'} ${logData.emotionalTone}` },
+              { label: 'Urgency', val: `${URGENCY_META[logData.urgency]?.emoji} ${logData.urgency}` },
+            ].map(({ label, val }) => (
+              <div key={label} style={{ background: 'var(--surface2)', borderRadius: 12, padding: '10px 12px', border: '1px solid var(--border)' }}>
+                <p style={{ fontSize: 10, fontWeight: 700, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '.04em' }}>{label}</p>
+                <p style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', textTransform: 'capitalize', marginTop: 2 }}>{val}</p>
+              </div>
+            ))}
+          </div>
+          <p style={{ fontSize: 12, fontWeight: 700, color: 'var(--text3)', textTransform: 'uppercase', marginBottom: 6 }}>Detected Symptoms</p>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 14 }}>
+            {(logData.symptoms || []).map(s => <span key={s} className="symptom-chip">{s}</span>)}
+          </div>
+          <p style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.65, borderTop: '1px solid var(--border)', paddingTop: 12, marginBottom: 14 }}>
+            <strong>AI Summary:</strong> {logData.summary}
+          </p>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn-g" onClick={saveLog} style={{ flex: 1, padding: '10px', fontSize: 13 }}>💾 Save to Timeline</button>
+            <button className="btn-p" onClick={() => shareToFeed({ transcript, logData, id: Date.now(), createdAt: '' })} style={{ flex: 1, padding: '10px', borderRadius: 50, fontSize: 13 }}>📤 Share to Feed</button>
+          </div>
+        </div>
+      )}
+
+      {/* Timeline */}
+      {logs.length > 0 && (
+        <div className="ai-card fu">
+          <p style={{ fontWeight: 800, fontSize: 14, color: 'var(--text)', marginBottom: 18 }}>📅 Health Timeline</p>
+          {logs.map((entry) => {
+            const meta = URGENCY_META[entry.logData.urgency] || URGENCY_META.routine;
+            return (
+              <div key={entry.id} className="timeline-node">
+                <div className="timeline-dot" style={{ background: meta.dotBg, borderColor: meta.dotColor }}>
+                  {TONE_EMOJI[entry.logData.emotionalTone] || '😐'}
+                </div>
+                <div className="timeline-card">
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                    <p style={{ fontWeight: 700, fontSize: 13, color: 'var(--text)' }}>{entry.logData.summary}</p>
+                    <span className={`urgency-badge ${meta.cls}`}>{meta.label}</span>
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 8 }}>
+                    {(entry.logData.symptoms || []).map(s => <span key={s} className="symptom-chip" style={{ fontSize: 11 }}>{s}</span>)}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <p style={{ fontSize: 11, color: 'var(--text3)' }}>⏱ {entry.logData.duration} · {entry.createdAt}</p>
+                    <button className="action-btn" onClick={() => shareToFeed(entry)} style={{ fontSize: 11, padding: '4px 10px' }}>📤 Share</button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {logs.length === 0 && recState === 'idle' && !logData && (
+        <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text3)' }}>
+          <p style={{ fontSize: 40, marginBottom: 12 }}>🎙️</p>
+          <p style={{ fontSize: 15, fontWeight: 700, color: 'var(--text2)', marginBottom: 6 }}>No voice logs yet</p>
+          <p style={{ fontSize: 13 }}>Record your symptoms and build your personal health timeline</p>
+        </div>
+      )}
+    </div>
+  );
+};
+
+/* ════════════════════════════════════════════════════════════════
+   EMPATHETIC AVATAR (Floating Chat)
+════════════════════════════════════════════════════════════════ */
+const EmpathicAvatar = () => {
+  const [open, setOpen] = useState(false);
+  const [messages, setMessages] = useState([
+    { role: 'ai', content: 'Hi! 👋 I\'m Svasthya AI. I can help you understand health terms, draft posts, or guide you through the community. What\'s on your mind?' }
+  ]);
+  const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
+  const messagesEndRef = useRef(null);
+  const inputRef = useRef(null);
+
+  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+
+  const send = async () => {
+    const msg = input.trim();
+    if (!msg || loading) return;
+    setInput('');
+    const history = messages.filter(m => m.role !== 'ai' || messages.indexOf(m) > 0)
+      .map(m => ({ role: m.role === 'ai' ? 'assistant' : 'user', content: m.content }));
+    setMessages(prev => [...prev, { role: 'user', content: msg }]);
+    setLoading(true);
+    try {
+      const reply = await chatWithAvatar(history, msg);
+      setMessages(prev => [...prev, { role: 'ai', content: reply }]);
+      // Browser TTS for accessibility
+      if ('speechSynthesis' in window) {
+        const utt = new SpeechSynthesisUtterance(reply);
+        utt.rate = 0.95; utt.pitch = 1.05;
+        utt.onstart = () => setSpeaking(true);
+        utt.onend = () => setSpeaking(false);
+        window.speechSynthesis.speak(utt);
+      }
+    } catch {
+      setMessages(prev => [...prev, { role: 'ai', content: 'Sorry, I had trouble connecting. Please try again in a moment.' }]);
+    }
+    setLoading(false);
+  };
+
+  const stopSpeech = () => { window.speechSynthesis?.cancel(); setSpeaking(false); };
+
+  return (
+    <>
+      {/* FAB */}
+      <button className="avatar-fab" onClick={() => setOpen(o => !o)} title="Chat with Svasthya AI" style={{ bottom: open ? 'calc(148px + 520px + 12px)' : undefined }}>
+        {open ? (
+          <svg width="22" height="22" fill="none" stroke="#fff" strokeWidth="2.5" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        ) : (
+          <svg width="22" height="22" fill="none" stroke="#fff" strokeWidth="2" viewBox="0 0 24 24">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+          </svg>
+        )}
+      </button>
+
+      {open && (
+        <div className="avatar-drawer">
+          {/* Header */}
+          <div className="avatar-header">
+            <div className="avatar-face" style={{ position: 'relative' }}>
+              <svg width="28" height="28" viewBox="0 0 40 40" fill="none">
+                <circle cx="20" cy="16" r="10" fill="rgba(255,255,255,.9)"/>
+                <circle cx="16" cy="15" r="2" fill="#007a6e"/>
+                <circle cx="24" cy="15" r="2" fill="#007a6e"/>
+                <path d="M15 20 Q20 24 25 20" stroke="#007a6e" strokeWidth="1.8" strokeLinecap="round" fill="none"/>
+                <circle cx="20" cy="30" r="8" fill="rgba(255,255,255,.7)"/>
+              </svg>
+              {speaking && <div style={{ position: 'absolute', bottom: -2, right: -2, width: 12, height: 12, background: '#22c55e', borderRadius: '50%', border: '2px solid white', animation: 'pulseGlow .8s infinite' }}/>}
+            </div>
+            <div style={{ flex: 1 }}>
+              <p style={{ color: '#fff', fontWeight: 700, fontSize: 14 }}>Svasthya AI</p>
+              <p style={{ color: 'rgba(255,255,255,.75)', fontSize: 11 }}>{loading ? 'Thinking…' : speaking ? '🔊 Speaking…' : 'Your health companion'}</p>
+            </div>
+            {speaking && (
+              <button onClick={stopSpeech} style={{ background: 'rgba(255,255,255,.15)', border: 'none', borderRadius: 8, padding: '4px 8px', color: '#fff', cursor: 'pointer', fontSize: 11 }}>⏹ Stop</button>
+            )}
+          </div>
+
+          {/* Messages */}
+          <div className="chat-messages">
+            {messages.map((m, i) => (
+              <div key={i} className={`chat-bubble ${m.role}`}>
+                {m.content}
+              </div>
+            ))}
+            {loading && (
+              <div className="chat-bubble ai">
+                <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                  <div className="translator-dot"/><div className="translator-dot"/><div className="translator-dot"/>
+                </div>
+              </div>
+            )}
+            <div ref={messagesEndRef}/>
+          </div>
+
+          {/* Input */}
+          <div className="chat-input-row">
+            <input
+              ref={inputRef}
+              className="chat-input"
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && !e.shiftKey && send()}
+              placeholder="Ask about symptoms, terms, or how to post…"
+            />
+            <button
+              onClick={send}
+              disabled={!input.trim() || loading}
+              style={{ width: 36, height: 36, borderRadius: '50%', border: 'none', background: 'linear-gradient(135deg,#00a896,#007a6e)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, opacity: !input.trim() || loading ? .5 : 1 }}
+            >
+              <svg width="16" height="16" fill="none" stroke="#fff" strokeWidth="2.5" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+            </button>
+          </div>
+
+          <p style={{ fontSize: 10, color: 'var(--text3)', textAlign: 'center', padding: '0 12px 8px' }}>
+            Not a substitute for medical advice · Emergency: 112
+          </p>
+        </div>
+      )}
+    </>
+  );
+};
+
+/* ════════════════════════════════════════════════════════════════
    LEFT SIDEBAR
 ════════════════════════════════════════════════════════════════ */
 const LeftSidebar = ({activePage, setPage}) => {
@@ -850,6 +1636,9 @@ const LeftSidebar = ({activePage, setPage}) => {
     ...(isDoc ? [] : [{id:"tests",label:"Book Tests",icon:IC.calendar}]),
     ...(isDoc ? [{id:"dashboard",label:"Dashboard",icon:IC.clipboard}] : []),
     {id:"trends",label:"Health Trends",icon:IC.trend},
+    {id:"voicelog",label:"Voice Log",icon:(
+      <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.9" viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+    )},
     {id:"profile",label:"My Profile",   icon:IC.user},
   ];
 
@@ -3046,6 +3835,7 @@ export default function App() {
       case "tests": return <MedicalTestPage/>;
       case "dashboard": return <DoctorDashboardPage/>;
       case "trends": return <HealthTrendsPage/>;
+      case "voicelog": return <VoiceLogPage />;
       case "profile": return <ProfilePage profileUserId={profileId||authUser.id} onHashtagClick={goHashtag}/>;
       default:        return <FeedPage onHashtagClick={goHashtag} onProfileClick={goProfile}/>;
     }
@@ -3069,6 +3859,7 @@ export default function App() {
         setPage(p);
       }}/>
       {appointmentDoc && <AppointmentModal doctor={appointmentDoc} onClose={()=>setAppointmentDoc(null)}/>}
+      <EmpathicAvatar />
     </AppCtx.Provider>
   );
 }
